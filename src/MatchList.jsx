@@ -1,7 +1,7 @@
 // 詳細ページができていない
 //試合順に並び替えたい
 //削除機能delete
-
+import { Link } from 'react-router-dom';
 import React, { useState, useEffect } from "react";
 
 export default function MatchList() {
@@ -137,15 +137,26 @@ const handleSubmit = async (e) => {
       </section>
 
       {/* 試合リスト */}
-      <h2 style={{ fontSize: "16px", color: "#6B8CAE" }}>MATCH LIST</h2>
+      <h2 style={{ fontSize: "16px", color: "#6B8CAE", marginTop: "30px" }}>MATCH LIST</h2>
       <div style={{ display: "grid", gap: "10px" }}>
         {matches.map((m) => (
           <div key={m.id} style={{ backgroundColor: "#0D1628", padding: "15px", borderRadius: "8px", borderLeft: "5px solid #00A0E9" }}>
             <div style={{ fontSize: "15px", color: "#6B8CAE" }}>第{m.section}節</div>
-            <div style={{ fontWeight: "bold", fontSize: "18px" }}>vs {m.opponent}</div>
+            
+            {/* ★ここを書き換え：対戦相手の名前を Link にします */}
+            <div style={{ fontWeight: "bold", fontSize: "18px", margin: "5px 0" }}>
+              <Link 
+                to={`/match/${m.id}`} 
+                style={{ color: "white", textDecoration: "none", cursor: "pointer" }}
+                onMouseOver={(e) => e.target.style.color = "#00A0E9"} // ホバー時にフロンターレブルーに
+                onMouseOut={(e) => e.target.style.color = "white"}
+              >
+                vs {m.opponent}
+              </Link>
+            </div>
+
             <div style={{ fontSize: "15px", color: "#6B8CAE" }}>スコア: {m.score || "未定"}</div>
             <div style={{ fontSize: "15px", color: "#6B8CAE" }}>結果: {m.result}</div>
-
           </div>
         ))}
       </div>
