@@ -24,11 +24,8 @@ app.use(express.json());
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
-// ============================================================
-// MATCHES (試合情報)
-// ============================================================
 
-/** GET /api/matches - 試合一覧取得 */
+/* 試合一覧取得 */
 app.get("/api/matches", asyncHandler(async (req, res) => {
   const { rows } = await pool.query("SELECT * FROM matches ORDER BY section ASC");
   res.json({ data: rows });
@@ -52,9 +49,9 @@ app.get("/api/matches/:id", asyncHandler(async (req, res) => {
   });
 }));
 
-// ============================================================
+
 // SCENES (分析シーン & 座標データ)
-// ============================================================
+
 
 /** POST /api/matches/:matchId/scenes - 新規シーン登録(座標も一緒に保存可) */
 app.post("/api/matches/:matchId/scenes", asyncHandler(async (req, res) => {
@@ -117,6 +114,12 @@ app.post("/api/matches", async (req, res) => {
   }
 });
 
+//試合情報を削除
+app.delete("/api/matches/:id", async (req, res) => {
+  const { id } = req.params;  
+  await pool.query("DELETE FROM matches WHERE id = $1", [id]);
+  res.status(204).send();
+});
 
 
 

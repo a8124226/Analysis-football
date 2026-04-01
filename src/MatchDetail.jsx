@@ -1,28 +1,3 @@
-/**
-
-# 依頼内容
-J.FRO分析ボードの `MatchDetail.jsx` を、試合ごとに「スタメン（背番号）登録」と「シーン自作・保存」ができる実用的なツールへ大幅にアップデートしてください。
-
-## 1. スタメン（背番号）マスター機能
-- `INIT_PIECES` を直接使うのをやめ、試合ごとに `starters` (State) を管理するようにしてください。
-- 左側サイドバーの一番上に「スタメン設定・基本配置」セクションを常設します。
-- ここを選択している間、以下の操作を可能にします：
-  - 各駒（選手）をクリックすると `window.prompt` 等で背番号を変更できる。
-  - 駒をドラッグして「その試合のデフォルト陣形（4-4-2など）」を作成できる。
-- 他のどのシーンを再生しても、ここで設定した「最新の背番号」が各駒に反映されるようにしてください。
-
-## 2. シーンの動的追加・保存機能 (match_id 紐付け)
-- 現在コードに直書きされている `SCENES` を削除し、`match_id` ごとに `localStorage` からデータを読み書きする仕組みに変更してください。
-- 既存のシーンリストの下に「＋ シーンを追加」ボタンを作成します。
-- ボタン押下で入力フォームを表示し、以下を登録可能にします：
-  - ラベル（時間・タイトル）、チーム（自/相手）、タイプ（得点/失点）、得点者。
-- 「保存」を押した瞬間の「ピッチ上の全駒の座標」を、そのシーンの `frames[0]`（開始位置）として記録します。
-
-## 技術的要件
-- 駒のデータ構造は `{ id, team, no, x, y }` を基本とし、シーンの `frames` 内にはその座標 snapshot を保持する形にしてください。
-- `useEffect` を使い、ページ遷移時にその `match_id` に適したデータが読み込まれるようにしてください。
- */
-
 import React, {
   useState, useEffect, useCallback, useRef, useMemo,
 } from 'react';
@@ -34,6 +9,9 @@ import Draggable from 'react-draggable';
 const PITCH_W = 480;
 const PITCH_H = 720;
 const RADIUS  = 19;
+
+const FRAME_COUNT = 5;  //フレーム数
+const FRAME_DUR   = 800; // 再生速度（ms）
 
 // カラーパレット
 const C = {
@@ -53,6 +31,8 @@ const C = {
   muted:      '#6B8CAE',
   text:       '#E8F4FF',
   green:      '#4ADE80',
+  orange:     '#FB923C',
+  editorBg:   '#0C1830',
 };
 
 
@@ -85,243 +65,235 @@ const INIT_PIECES = (() => {
   ];
 })();
 
-function expandFrames(rawFrames) {
-  const expanded = [];
-  let cur = Object.fromEntries(INIT_PIECES.map(q => [q.id, { x: q.x, y: q.y }]));
-  for (const frame of rawFrames) {
-    cur = { ...cur, ...(frame.positions || {}) };
-    expanded.push({ positions: { ...cur }, lines: frame.lines || [] });
-  }
-  return expanded;
+/** INIT_PIECES をフレームスナップショット形式に変換 */
+const defaultSnapshot = () =>
+  INIT_PIECES.map(({ id, team, no, x, y }) => ({ id, team, no, x, y }));
+ 
+/** localStorage キー */
+const storageKey = (matchId) => `jfro_match_${matchId}_scenes`;
+ 
+/** localStorage から読み込み */
+function loadScenes(matchId) {
+  try {
+    const raw = localStorage.getItem(storageKey(matchId));
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+ 
+/** localStorage へ保存 */
+function saveScenes(matchId, scenes) {
+  localStorage.setItem(storageKey(matchId), JSON.stringify(scenes));
 }
 
-const SCENES = [
-  {
-    id: 1, label: '【23分】先制ゴール', type: 'goal',
-    scorer: '10番', comment: '右サイド崩し→クロス→中央で合わせた先制点',
-    frameDuration: 920,
-    frames: expandFrames([
-      { positions: {} },
-      {
-        positions: {
-          'home_7': p(88, 43),
-          'ball':   p(88, 43),
-          'away_1': p(76, 27),
-        },
-        lines: [],
-      },
-      {
-        positions: {
-          'home_7':  p(93, 31),
-          'ball':    p(93, 31),
-          'home_10': p(55, 37),
-          'home_9':  p(46, 28),
-          'away_2':  p(73, 27),
-          'away_3':  p(61, 28),
-        },
-        lines: [],
-      },
-      {
-        positions: {
-          'home_10': p(55, 27),
-          'ball':    p(55, 27),
-        },
-        lines: [{ from: p(93,31), to: p(55,27), type: 'pass' }],
-      },
-      {
-        positions: { 'ball': p(50, 10) },
-        lines: [{ from: p(55,27), to: p(50,10), type: 'shot' }],
-      },
-    ]),
-  },
-  {
-    id: 2, label: '【55分】 失点', type: 'concede',
-    scorer: '相手9番', comment: '中盤でのボールロスト→2vs1カウンター失点',
-    frameDuration: 880,
-    frames: expandFrames([
-      { positions: {} },
-      {
-        positions: {
-          'home_6': p(36, 58),
-          'away_9': p(52, 52),
-          'ball':   p(52, 52),
-        },
-        lines: [],
-      },
-      {
-        positions: {
-          'away_9':  p(54, 63),
-          'away_10': p(40, 59),
-          'ball':    p(54, 63),
-          'home_5':  p(63, 69),
-          'home_4':  p(44, 73),
-        },
-        lines: [],
-      },
-      {
-        positions: {
-          'away_10': p(46, 74),
-          'ball':    p(46, 74),
-          'home_5':  p(62, 76),
-          'home_4':  p(42, 77),
-        },
-        lines: [{ from: p(54,63), to: p(46,74), type: 'pass' }],
-      },
-      {
-        positions: { 'ball': p(50, 90) },
-        lines: [{ from: p(46,74), to: p(50,90), type: 'shot' }],
-      },
-    ]),
-  },
-];
-
-// ピッチ背景 SVG
+// ============================================================
+// サブコンポーネント：サッカーピッチ SVG
+// ============================================================
 function SoccerPitch() {
   const W = PITCH_W, H = PITCH_H, lc = C.line, sw = 1.8;
   return (
     <svg viewBox={`0 0 ${W} ${H}`}
       style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none' }}>
-      {Array.from({ length: 8 }, (_, i) => (
+      {Array.from({ length:8 }, (_, i) => (
         <rect key={i} x={0} y={i*(H/8)} width={W} height={H/16} fill={C.pitchAlt} opacity={0.45}/>
       ))}
       <rect x={14} y={12} width={W-28} height={H-24} fill="none" stroke={lc} strokeWidth={sw}/>
       <line x1={14} y1={H/2} x2={W-14} y2={H/2} stroke={lc} strokeWidth={sw}/>
       <circle cx={W/2} cy={H/2} r={62} fill="none" stroke={lc} strokeWidth={sw}/>
-      <circle cx={W/2} cy={H/2} r={4} fill={lc}/>
+      <circle cx={W/2} cy={H/2} r={4}  fill={lc}/>
+      {/* ペナルティエリア（上） */}
       <rect x={W/2-110} y={12} width={220} height={100} fill="none" stroke={lc} strokeWidth={sw}/>
-      <rect x={W/2-52} y={12} width={104} height={44} fill="none" stroke={lc} strokeWidth={sw}/>
-      <rect x={W/2-32} y={2} width={64} height={14} fill="rgba(255,255,255,0.07)" stroke={lc} strokeWidth={2.5}/>
-      <circle cx={W/2} cy={64} r={4} fill={lc}/>
+      <rect x={W/2-52}  y={12} width={104} height={44}  fill="none" stroke={lc} strokeWidth={sw}/>
+      <rect x={W/2-32}  y={2}  width={64}  height={14}
+        fill="rgba(255,255,255,0.07)" stroke={lc} strokeWidth={2.5}/>
+      <circle cx={W/2} cy={64}    r={4} fill={lc}/>
+      {/* ペナルティエリア（下） */}
       <rect x={W/2-110} y={H-112} width={220} height={100} fill="none" stroke={lc} strokeWidth={sw}/>
-      <rect x={W/2-52} y={H-56} width={104} height={44} fill="none" stroke={lc} strokeWidth={sw}/>
-      <rect x={W/2-32} y={H-16} width={64} height={14} fill="rgba(255,255,255,0.07)" stroke={lc} strokeWidth={2.5}/>
+      <rect x={W/2-52}  y={H-56}  width={104} height={44}  fill="none" stroke={lc} strokeWidth={sw}/>
+      <rect x={W/2-32}  y={H-16}  width={64}  height={14}
+        fill="rgba(255,255,255,0.07)" stroke={lc} strokeWidth={2.5}/>
       <circle cx={W/2} cy={H-64} r={4} fill={lc}/>
-
       <text x={20} y={H/2-8}  fontSize={10} fill={lc} opacity={0.35} fontFamily="sans-serif" letterSpacing={1}>OPPONENT</text>
       <text x={20} y={H/2+20} fontSize={10} fill={lc} opacity={0.35} fontFamily="sans-serif" letterSpacing={1}>KAWASAKI</text>
     </svg>
   );
 }
 
-function TrajectoryLines({ lines }) {
-  if (!lines || lines.length === 0) return null;
-  return (
-    <svg viewBox={`0 0 ${PITCH_W} ${PITCH_H}`}
-      style={{ position:'absolute', inset:0, width:'100%', height:'100%', pointerEvents:'none', zIndex:15 }}>
-      <defs>
-        {['pass','shot'].map(t => (
-          <marker key={t} id={`arr-${t}`} viewBox="0 0 10 10" refX={8} refY={5}
-            markerWidth={5} markerHeight={5} orient="auto-start-reverse">
-            <path d="M1 2L8 5L1 8" fill="none"
-              stroke={t==='shot'?'#F5C842':'rgba(255,255,255,.9)'}
-              strokeWidth={2} strokeLinecap="round"/>
-          </marker>
-        ))}
-      </defs>
-      {lines.map((line, i) => {
-        if (line.type === 'run') return null;
-        const isShot = line.type === 'shot';
-        const color  = isShot ? '#F5C842' : 'rgba(255,255,255,0.9)';
-        const mx = (line.from.x + line.to.x) / 2 - (line.to.y - line.from.y) * 0.15;
-        const my = (line.from.y + line.to.y) / 2 + (line.to.x - line.from.x) * 0.15;
-        const d  = `M ${line.from.x} ${line.from.y} Q ${mx} ${my} ${line.to.x} ${line.to.y}`;
-
-        const pathLen = Math.hypot(line.to.x - line.from.x, line.to.y - line.from.y) * 1.2;
-        const dur = isShot ? '0.38s' : '0.52s';
-
-        return (
-          <g key={i}>
-            {isShot && (
-              <path d={d} fill="none" stroke="#F5C84240" strokeWidth={14} strokeLinecap="round"/>
-            )}
-            <path d={d} fill="none"
-              stroke={color}
-              strokeWidth={isShot ? 2.8 : 2.4}
-              strokeLinecap="round"
-              markerEnd={`url(#arr-${line.type})`}
-              style={{
-                strokeDasharray: `${pathLen} ${pathLen}`,
-                strokeDashoffset: pathLen,
-                animation: `jfroLine ${dur} ease-out forwards`,
-              }}
-            />
-          </g>
-        );
-      })}
-      <style>{`
-        @keyframes jfroLine {
-          from { stroke-dashoffset: var(--len, 800); }
-          to   { stroke-dashoffset: 0; }
-        }
-      `}</style>
-    </svg>
-  );
-}
-
-function Piece({ piece, onDragStop }) {
+// ============================================================
+// サブコンポーネント：駒（Draggable）
+// ★ bounds を親要素基準（"parent"）に設定し、ピッチ全体を移動可能にする。
+//   bounds を省略 or 数値で制限すると一部のエリアしか動けなくなる。
+// ============================================================
+function Piece({ piece, onDragStop, disabled }) {
   const nodeRef = useRef(null);
   const isBall  = piece.team === 'ball';
-  const color   = isBall ? C.ball  : piece.team === 'home' ? C.home  : C.away;
+  const color   = isBall ? C.ball     : piece.team === 'home' ? C.home     : C.away;
   const dark    = isBall ? C.ballDark : piece.team === 'home' ? C.homeDark : C.awayDark;
 
   return (
     <Draggable
       nodeRef={nodeRef}
+      disabled={disabled}
+      bounds="parent"
       position={{ x: piece.x - RADIUS, y: piece.y - RADIUS }}
       onStop={(_, d) => onDragStop(piece.id, d.x + RADIUS, d.y + RADIUS)}
     >
       <div ref={nodeRef} title={`#${piece.no}`} style={{
         position:'absolute', width:RADIUS*2, height:RADIUS*2, borderRadius:'50%',
-        cursor:'grab', userSelect:'none', zIndex: isBall ? 30 : 20,
+        cursor: disabled ? 'default' : 'grab', userSelect:'none',
+        zIndex: isBall ? 30 : 20,
         background:`radial-gradient(circle at 35% 35%, ${color}, ${dark})`,
         border:'2px solid rgba(255,255,255,0.55)',
         boxShadow:'0 3px 10px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.25)',
         display:'flex', alignItems:'center', justifyContent:'center',
-        fontSize: isBall ? 14 : (piece.no.length > 1 ? 10 : 12),
-        fontWeight:700, color:'#fff', fontFamily:'sans-serif',
+        fontSize: 14, fontWeight:700, color:'#fff', fontFamily:'sans-serif',
       }}>
-        {isBall ? '⚽' : piece.no}
+        {isBall ? '⚽' : ''}
       </div>
     </Draggable>
   );
 }
 
-export default function MatchDetail() {
-  const { id } = useParams();
+// ============================================================
+// サブコンポーネント：アニメーション用 駒（CSS transition）
+// ============================================================
+function AnimPiece({ piece, duration }) {
+  const isBall = piece.team === 'ball';
+  const color  = isBall ? C.ball     : piece.team === 'home' ? C.home     : C.away;
+  const dark   = isBall ? C.ballDark : piece.team === 'home' ? C.homeDark : C.awayDark;
+  return (
+    <div style={{
+      position:'absolute',
+      left: piece.x - RADIUS,
+      top:  piece.y - RADIUS,
+      width:  RADIUS*2,
+      height: RADIUS*2,
+      borderRadius:'50%',
+      transition:`left ${duration}ms cubic-bezier(0.4,0,0.2,1), top ${duration}ms cubic-bezier(0.4,0,0.2,1)`,
+      background:`radial-gradient(circle at 35% 35%, ${color}, ${dark})`,
+      border:'2px solid rgba(255,255,255,0.55)',
+      boxShadow:'0 3px 10px rgba(0,0,0,0.55)',
+      display:'flex', alignItems:'center', justifyContent:'center',
+      fontSize: 14, fontWeight:700, color:'#fff', fontFamily:'sans-serif',
+      zIndex: isBall ? 30 : 20,
+      pointerEvents:'none',
+    }}>
+      {isBall ? '⚽' : ''}
+    </div>
+  );
+}
 
-  const [activeSceneId, setActiveSceneId] = useState(null);
-  const [frameIndex,     setFrameIndex]    = useState(0);
-  const [isPlaying,      setIsPlaying]     = useState(false);
-  const [isAnimating,    setIsAnimating]   = useState(false);
+// ============================================================
+// サブコンポーネント：新規シーン作成フォーム
+// ============================================================
+function SceneForm({ onStart, onCancel }) {
+  const [form, setForm] = useState({
+    label: '', type: 'goal', team: 'home', pattern: 'セットプレー', scorer: '',
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const labelStyle = { fontSize:11, color:C.muted, marginBottom:4, display:'block' };
+  const inputStyle = {
+    width:'100%', padding:'7px 10px', background:'#0A1628',
+    border:`1px solid ${C.border}`, borderRadius:5,
+    color:C.text, fontSize:13, outline:'none', marginBottom:12,
+  };
+  const selectStyle = { ...inputStyle };
+
+  return (
+    <div style={{ background:C.editorBg, border:`1px solid ${C.border}`, borderRadius:8, padding:'14px 14px 10px', marginTop:4 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:C.blue, marginBottom:12, letterSpacing:'.05em' }}>
+        新規シーン作成
+      </div>
+
+      <label style={labelStyle}>時間</label>
+      <input style={inputStyle} value={form.label} onChange={e => set('label', e.target.value)} placeholder="23分" />
+
+      <label style={labelStyle}>得点or失点（川崎視点）</label>
+      <select style={selectStyle} value={form.type} onChange={e => set('type', e.target.value)}>
+        <option value="goal">得点</option>
+        <option value="concede">失点</option>
+      </select>
+
+      <label style={labelStyle}>パターン</label>
+      <select style={selectStyle} value={form.pattern} onChange={e => set('pattern', e.target.value)}>
+        <option value="セットプレー">セットプレー</option>
+        <option value="カウンター">カウンター</option>
+        <option value="クロス">クロス</option>
+        <option value="崩し">崩し</option>
+        <option value="自陣ミス">自陣ミス</option>
+        <option value="その他">その他</option>
+      </select>
+
+      <label style={labelStyle}>得点者</label>
+      <input style={inputStyle} value={form.scorer} onChange={e => set('scorer', e.target.value)} placeholder="例：小林悠" />
+
+      <div style={{ display:'flex', gap:8 }}>
+        <button onClick={() => { if (!form.label.trim()) return alert('時間を入力してください'); onStart(form); }}
+          style={{ flex:1, padding:'8px 0', background:C.blue, border:'none', borderRadius:6, color:'#fff', fontSize:12, fontWeight:700, cursor:'pointer' }}>
+          作成
+        </button>
+        <button onClick={onCancel}
+          style={{ padding:'8px 14px', background:'#1A2E50', border:'none', borderRadius:6, color:C.muted, fontSize:12, cursor:'pointer' }}>
+          キャンセル
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// メインコンポーネント
+// ============================================================
+export default function MatchDetail() {
+  const { id: matchId } = useParams();
+
+  const [scenes,       setScenes]       = useState([]);
+  const [playSceneId,  setPlaySceneId]  = useState(null);
+  const [playFrameIdx, setPlayFrameIdx] = useState(0);
+  const [isPlaying,    setIsPlaying]    = useState(false);
+  const [isAnimating,  setIsAnimating]  = useState(false);
+  const [playPositions,setPlayPositions]= useState(null);
   const playTimerRef = useRef(null);
   const animTimerRef = useRef(null);
 
-  const [positions, setPositions] = useState(
-    Object.fromEntries(INIT_PIECES.map(q => [q.id, { x: q.x, y: q.y }]))
-  );
+  const [editorMode,    setEditorMode]    = useState(false);
+  const [showForm,      setShowForm]      = useState(false);
+  const [editingMeta,   setEditingMeta]   = useState(null);
+  const [editSceneId,   setEditSceneId]   = useState(null);
+  const [tempFrames,    setTempFrames]    = useState(null);
+  const [editorFrame,   setEditorFrame]   = useState(0);
+  const [visitedFrames, setVisitedFrames] = useState(new Set([0]));
+
   const [savedMsg, setSavedMsg] = useState('');
 
-  const activeScene  = useMemo(() => SCENES.find(s => s.id === activeSceneId) ?? null, [activeSceneId]);
-  const totalFrames  = activeScene?.frames.length ?? 0;
-  const currentFrame = activeScene?.frames[frameIndex] ?? null;
+  useEffect(() => {
+    setScenes(loadScenes(matchId));
+  }, [matchId]);
 
-  const applyFrame = useCallback((scene, fi) => {
+  // ── 再生ロジック ─────────────────────────────────────────
+  const activePlayScene = useMemo(
+    () => scenes.find(s => s.id === playSceneId) ?? null,
+    [scenes, playSceneId]
+  );
+  const totalPlayFrames = activePlayScene?.frames.length ?? 0;
+
+  const applyPlayFrame = useCallback((scene, fi) => {
     const frame = scene.frames[fi];
     if (!frame) return;
     setIsAnimating(true);
-    setPositions(frame.positions);
+    setPlayPositions(frame);
     clearTimeout(animTimerRef.current);
-    animTimerRef.current = setTimeout(() => setIsAnimating(false), scene.frameDuration * 0.92);
+    animTimerRef.current = setTimeout(() => setIsAnimating(false), FRAME_DUR * 0.92);
   }, []);
 
-  const playScene = useCallback((scene, startFi = 0) => {
+  const handleSceneClick = useCallback((scene) => {
+    if (editorMode) return;
     clearInterval(playTimerRef.current);
-    setActiveSceneId(scene.id);
+    setPlaySceneId(scene.id);
+    setPlayFrameIdx(0);
     setIsPlaying(true);
-    let fi = startFi;
-    setFrameIndex(fi);
-    applyFrame(scene, fi);
-
+    applyPlayFrame(scene, 0);
+    let fi = 0;
     playTimerRef.current = setInterval(() => {
       fi++;
       if (fi >= scene.frames.length) {
@@ -329,84 +301,156 @@ export default function MatchDetail() {
         setIsPlaying(false);
         return;
       }
-      setFrameIndex(fi);
-      applyFrame(scene, fi);
-    }, scene.frameDuration);
-  }, [applyFrame]);
-
-  const handleSceneClick = useCallback((scene) => {
-    clearInterval(playTimerRef.current);
-    playScene(scene, 0);
-  }, [playScene]);
+      setPlayFrameIdx(fi);
+      applyPlayFrame(scene, fi);
+    }, FRAME_DUR);
+  }, [editorMode, applyPlayFrame]);
 
   const handlePlayPause = useCallback(() => {
-    if (!activeScene) return;
-    if (isPlaying) {
-      clearInterval(playTimerRef.current);
-      setIsPlaying(false);
-    } else {
-      const start = frameIndex >= totalFrames - 1 ? 0 : frameIndex;
-      playScene(activeScene, start);
-    }
-  }, [activeScene, isPlaying, frameIndex, totalFrames, playScene]);
+    if (!activePlayScene) return;
+    if (isPlaying) { clearInterval(playTimerRef.current); setIsPlaying(false); }
+    else           { handleSceneClick(activePlayScene); }
+  }, [activePlayScene, isPlaying, handleSceneClick]);
 
   const handleSeek = useCallback((fi) => {
-    if (!activeScene) return;
+    if (!activePlayScene) return;
     clearInterval(playTimerRef.current);
     setIsPlaying(false);
-    setFrameIndex(fi);
-    applyFrame(activeScene, fi);
-  }, [activeScene, applyFrame]);
+    setPlayFrameIdx(fi);
+    applyPlayFrame(activePlayScene, fi);
+  }, [activePlayScene, applyPlayFrame]);
 
   const handleReset = useCallback(() => {
     clearInterval(playTimerRef.current);
-    setActiveSceneId(null);
-    setFrameIndex(0);
+    setPlaySceneId(null);
+    setPlayFrameIdx(0);
     setIsPlaying(false);
-    setIsAnimating(true);
-    setPositions(Object.fromEntries(INIT_PIECES.map(q => [q.id, { x: q.x, y: q.y }])));
-    setTimeout(() => setIsAnimating(false), 700);
+    setIsAnimating(false);
+    setPlayPositions(null);
   }, []);
 
-  const handleDragStop = useCallback((pieceId, nx, ny) => {
-    setPositions(prev => ({
-      ...prev,
-      [pieceId]: {
-        x: Math.max(RADIUS, Math.min(PITCH_W - RADIUS, nx)),
-        y: Math.max(RADIUS, Math.min(PITCH_H - RADIUS, ny)),
-      },
-    }));
-  }, []);
+  const playPieces = useMemo(() => {
+    if (!playPositions) return INIT_PIECES.map(q => ({ ...q }));
+    const map = Object.fromEntries(playPositions.map(q => [q.id, q]));
+    return INIT_PIECES.map(q => ({ ...q, x: map[q.id]?.x ?? q.x, y: map[q.id]?.y ?? q.y }));
+  }, [playPositions]);
 
-  const handleSave = useCallback(() => {
-    const data = {
-      match_id:  Number(id),
-      scene_id:  activeSceneId,
-      frame:     frameIndex,
-      saved_at:  new Date().toISOString(),
-      snapshot: INIT_PIECES.map(q => ({
-        id: q.id, team: q.team, no: q.no,
-        x: Math.round(positions[q.id]?.x ?? q.x),
-        y: Math.round(positions[q.id]?.y ?? q.y),
-      })),
+  // ── エディタロジック ─────────────────────────────────────
+  const buildEmptyFrames = () => {
+    const frames = [];
+    for (let i = 0; i < FRAME_COUNT; i++) {
+      frames.push(i === 0
+        ? defaultSnapshot()
+        : frames[i - 1].map(piece => ({ ...piece }))
+      );
+    }
+    return frames;
+  };
+
+  const handleNewScene = () => {
+    clearInterval(playTimerRef.current);
+    setPlaySceneId(null);
+    setIsPlaying(false);
+    setShowForm(true);
+    setEditorMode(false);
+  };
+
+  const handleFormStart = (meta) => {
+    setEditingMeta(meta);
+    setEditSceneId(null);
+    setTempFrames(buildEmptyFrames());
+    setEditorFrame(0);
+    setVisitedFrames(new Set([0]));
+    setShowForm(false);
+    setEditorMode(true);
+  };
+
+  const handleEditorFrameChange = useCallback((fi) => {
+    setTempFrames(prev => {
+      if (!prev || fi === 0) return prev;
+      if (!visitedFrames.has(fi)) {
+        return prev.map((frame, i) =>
+          i === fi ? prev[fi - 1].map(piece => ({ ...piece })) : frame
+        );
+      }
+      return prev;
+    });
+    setVisitedFrames(prev => new Set([...prev, fi]));
+    setEditorFrame(fi);
+  }, [visitedFrames]);
+
+  // ★ clamp は bounds="parent" に委ねるためここでは行わない
+  const handleEditorDragStop = useCallback((pieceId, nx, ny) => {
+    setTempFrames(prev => {
+      if (!prev) return prev;
+      return prev.map((frame, fi) => {
+        if (fi !== editorFrame) return frame;
+        return frame.map(piece =>
+          piece.id === pieceId ? { ...piece, x: nx, y: ny } : piece
+        );
+      });
+    });
+  }, [editorFrame]);
+
+  const editorPieces = useMemo(() => {
+    if (!tempFrames) return INIT_PIECES.map(q => ({ ...q }));
+    return tempFrames[editorFrame] ?? INIT_PIECES.map(q => ({ ...q }));
+  }, [tempFrames, editorFrame]);
+
+  const handleRegisterScene = useCallback(() => {
+    if (!editingMeta || !tempFrames) return;
+    const newScene = {
+      id:        editSceneId ?? Date.now(),
+      label:     editingMeta.label,
+      type:      editingMeta.type,
+      team:      editingMeta.team,
+      pattern:   editingMeta.pattern,
+      scorer:    editingMeta.scorer,
+      frames:    tempFrames,
+      createdAt: new Date().toISOString(),
     };
-    console.log('=== J.FRO 保存データ ===', JSON.stringify(data, null, 2));
-    setSavedMsg('✓ 保存完了');
+    const updated = editSceneId
+      ? scenes.map(s => s.id === editSceneId ? newScene : s)
+      : [...scenes, newScene];
+    setScenes(updated);
+    saveScenes(matchId, updated);
+    setSavedMsg(`「${newScene.label}」を登録しました`);
     setTimeout(() => setSavedMsg(''), 3000);
-  }, [id, activeSceneId, frameIndex, positions]);
+    setEditorMode(false);
+    setEditingMeta(null);
+    setTempFrames(null);
+    setEditSceneId(null);
+    setVisitedFrames(new Set([0]));
+  }, [editingMeta, tempFrames, editSceneId, scenes, matchId]);
+
+  const handleEditorCancel = useCallback(() => {
+    setEditorMode(false);
+    setShowForm(false);
+    setEditingMeta(null);
+    setTempFrames(null);
+    setEditSceneId(null);
+    setVisitedFrames(new Set([0]));
+  }, []);
+
+  const handleDeleteScene = useCallback((sceneId, e) => {
+    e.stopPropagation();
+    if (!window.confirm('このシーンを削除しますか？')) return;
+    const updated = scenes.filter(s => s.id !== sceneId);
+    setScenes(updated);
+    saveScenes(matchId, updated);
+    if (playSceneId === sceneId) handleReset();
+  }, [scenes, matchId, playSceneId, handleReset]);
 
   useEffect(() => () => {
     clearInterval(playTimerRef.current);
     clearTimeout(animTimerRef.current);
   }, []);
 
-  const pieces = INIT_PIECES.map(q => ({
-    ...q,
-    x: positions[q.id]?.x ?? q.x,
-    y: positions[q.id]?.y ?? q.y,
-  }));
-  const currentLines = currentFrame?.lines ?? [];
+  const displayPieces = editorMode ? editorPieces : playPieces;
 
+  // ============================================================
+  // レンダー
+  // ============================================================
   return (
     <div style={{
       display:'flex', flexDirection:'column', height:'100vh',
@@ -415,6 +459,7 @@ export default function MatchDetail() {
       overflow:'hidden',
     }}>
 
+      {/* ヘッダー */}
       <div style={{
         padding:'8px 20px', borderBottom:`1px solid ${C.border}`,
         display:'flex', alignItems:'center', gap:12, flexShrink:0,
@@ -425,86 +470,127 @@ export default function MatchDetail() {
         </Link>
         <span style={{ color:C.border }}>|</span>
         <h2 style={{ margin:0, fontSize:16, fontWeight:700, color:C.blue, letterSpacing:'.05em' }}>
-          試合詳細・分析
+          {editorMode ? 'シーンエディタ' : '試合詳細・分析'}
         </h2>
-        <span style={{ fontSize:11, color:C.muted }}>Match ID: {id}</span>
-        {activeScene && (
+        <span style={{ fontSize:11, color:C.muted }}>Match ID: {matchId}</span>
+
+        {editorMode && editingMeta && (
           <>
             <span style={{ color:C.border }}>|</span>
-            <span style={{ fontSize:12, color: activeScene.type==='goal' ? C.home : C.away, fontWeight:600 }}>
-              {activeScene.label}
+            <span style={{ fontSize:12, color:C.orange, fontWeight:600 }}>
+              {editingMeta.label || '新規シーン'} フレーム {editorFrame + 1} / {FRAME_COUNT}
             </span>
           </>
         )}
-        <div style={{ marginLeft:'auto', display:'flex', gap:10, alignItems:'center' }}>
+
+        {!editorMode && activePlayScene && (
+          <>
+            <span style={{ color:C.border }}>|</span>
+            <span style={{ fontSize:12, fontWeight:600, color: activePlayScene.type === 'goal' ? C.home : C.away }}>
+              {activePlayScene.label}
+            </span>
+          </>
+        )}
+
+        <div style={{ marginLeft:'auto', display:'flex', gap:8, alignItems:'center' }}>
           {savedMsg && <span style={{ fontSize:11, color:C.green }}>{savedMsg}</span>}
-          <button onClick={handleSave} style={{
-            padding:'5px 14px', background:C.blue, border:'none', borderRadius:6,
-            color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer',
-          }}>
-            保存
-          </button>
         </div>
       </div>
 
+      {/* メイン（左右） */}
       <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
 
+        {/* 左：サイドバー */}
         <div style={{
           width:220, borderRight:`2px solid ${C.border}`, padding:'12px 10px',
           overflowY:'auto', display:'flex', flexDirection:'column', gap:8,
           background:'linear-gradient(180deg,#080E1C,#0F172A)', flexShrink:0,
         }}>
-          <div style={{ fontSize:10, color:C.muted, letterSpacing:'.15em', textTransform:'uppercase', marginBottom:2 }}>
-              Scenes
+          <div style={{ fontSize:10, color:C.muted, letterSpacing:'.15em', textTransform:'uppercase' }}>
+            Scenes
           </div>
 
-          {SCENES.map(scene => {
-            const isActive = activeSceneId === scene.id;
+          {scenes.length === 0 && !showForm && (
+            <div style={{ fontSize:11, color:C.muted, padding:'8px 0', lineHeight:1.7 }}>
+              シーンがありません。<br/>「＋ 新規シーン作成」から追加してください。
+            </div>
+          )}
+
+          {scenes.map(scene => {
+            const isActive = playSceneId === scene.id && !editorMode;
             const accent   = scene.type === 'goal' ? C.home : C.away;
             return (
-              <div key={scene.id} onClick={() => handleSceneClick(scene)} style={{
-                padding:'10px 12px', borderRadius:7,
-                background: isActive ? '#0D2040' : C.panel,
-                borderLeft:`4px solid ${isActive ? accent : C.border}`,
-                cursor:'pointer', transition:'all .15s',
-                outline: isActive ? `1px solid ${C.border}` : 'none',
-              }}>
-                <div style={{ fontSize:13, fontWeight:600, lineHeight:1.3 }}>{scene.label}</div>
-                <div style={{ fontSize:10, color:C.muted, marginTop:3 }}> {scene.scorer}</div>
-                {isActive && (
-                  <div style={{ fontSize:10, color:'#7EC8FF', marginTop:4, lineHeight:1.5 }}>
-                    {scene.comment}
+              <div key={scene.id} style={{ position:'relative' }}>
+                <div
+                  onClick={() => handleSceneClick(scene)}
+                  style={{
+                    padding:'10px 28px 10px 12px', borderRadius:7,
+                    background: isActive ? '#0D2040' : C.panel,
+                    borderLeft:`4px solid ${isActive ? accent : C.border}`,
+                    cursor: editorMode ? 'default' : 'pointer',
+                    transition:'all .15s',
+                    outline: isActive ? `1px solid ${C.border}` : 'none',
+                    opacity: editorMode ? 0.5 : 1,
+                  }}
+                >
+                  <div style={{ fontSize:12, fontWeight:600, lineHeight:1.3 }}>{scene.label}</div>
+                  <div style={{ fontSize:9, color: scene.type==='goal' ? '#7EC8FF' : '#FCA5A5', marginTop:2, textTransform:'uppercase', letterSpacing:'.06em' }}>
+                    {scene.type === 'goal' ? '得点' : '失点'}
                   </div>
-                )}
-                {isActive && (
-                  <div style={{ display:'flex', gap:4, marginTop:7, alignItems:'center' }}>
-                    {scene.frames.map((_, fi) => (
-                      <div key={fi}
-                        onClick={e => { e.stopPropagation(); handleSeek(fi); }}
-                        style={{
-                          width: fi === frameIndex ? 12 : 8,
-                          height: fi === frameIndex ? 8 : 8,
-                          borderRadius: fi === frameIndex ? 4 : '50%',
-                          background: fi <= frameIndex ? accent : C.border,
-                          cursor:'pointer', transition:'all .15s', flexShrink:0,
-                        }}
-                      />
-                    ))}
-                    {isPlaying && (
-                      <span style={{ fontSize:9, color:C.green, marginLeft:4, fontWeight:700 }}>● 再生中</span>
-                    )}
-                  </div>
-                )}
+                  <div style={{ fontSize:10, color:C.muted, marginTop:3 }}>パターン： {scene.pattern}</div>
+                  <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>得点者： {scene.scorer}</div>
+
+                  {isActive && (
+                    <div style={{ display:'flex', gap:4, marginTop:6, alignItems:'center' }}>
+                      {scene.frames.map((_, fi) => (
+                        <div key={fi} onClick={e => { e.stopPropagation(); handleSeek(fi); }}
+                          style={{
+                            width: fi === playFrameIdx ? 14 : 8, height:8,
+                            borderRadius: fi === playFrameIdx ? 4 : '50%',
+                            background: fi <= playFrameIdx ? accent : C.border,
+                            cursor:'pointer', transition:'all .15s', flexShrink:0,
+                          }}
+                        />
+                      ))}
+                      {isPlaying && <span style={{ fontSize:9, color:C.green, marginLeft:2, fontWeight:700 }}>● 再生中</span>}
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={e => handleDeleteScene(scene.id, e)} title="削除" style={{
+                  position:'absolute', right:6, top:'50%', transform:'translateY(-50%)',
+                  width:20, height:20, borderRadius:'50%',
+                  background:'rgba(224,85,85,0.15)', border:'1px solid rgba(224,85,85,0.3)',
+                  color:'#E05555', fontSize:11, cursor:'pointer',
+                  display:'flex', alignItems:'center', justifyContent:'center', lineHeight:1, padding:0,
+                }}>×</button>
               </div>
             );
           })}
 
-          <button onClick={handleReset} style={{
-            marginTop:'auto', padding:'8px 0', background:'#1A2E50', border:'none',
-            borderRadius:6, color:C.text, fontSize:11, cursor:'pointer',
-          }}>
-            ↺ 初期配置に戻す
-          </button>
+          {showForm ? (
+            <SceneForm onStart={handleFormStart} onCancel={() => setShowForm(false)} />
+          ) : (
+            !editorMode && (
+              <button onClick={handleNewScene} style={{
+                padding:'9px 0', background:'transparent',
+                border:`1px dashed ${C.border}`, borderRadius:7,
+                color:C.blue, fontSize:12, fontWeight:600,
+                cursor:'pointer', transition:'all .15s', letterSpacing:'.04em',
+              }}>
+                ＋ 新規シーン作成
+              </button>
+            )
+          )}
+
+          {!editorMode && !showForm && (
+            <button onClick={handleReset} style={{
+              marginTop:'auto', padding:'8px 0', background:'#1A2E50', border:'none',
+              borderRadius:6, color:C.text, fontSize:11, cursor:'pointer',
+            }}>
+              ↺ 初期配置に戻す
+            </button>
+          )}
 
           <div style={{ padding:'10px 0 0', borderTop:`1px solid ${C.border}`, fontSize:10, color:C.muted }}>
             {[
@@ -513,34 +599,57 @@ export default function MatchDetail() {
               { color:C.ball, label:'ボール' },
             ].map(({ color, label }) => (
               <div key={label} style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
-                <div style={{ width:10,height:10,borderRadius:'50%',background:color,flexShrink:0 }}/>
+                <div style={{ width:10, height:10, borderRadius:'50%', background:color, flexShrink:0 }}/>
                 {label}
               </div>
             ))}
-            <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:4 }}>
-              {[
-                { stroke:'rgba(255,255,255,.9)', dash:'none',  label:'パス',     key:'pass' },
-                { stroke:'#F5C842',              dash:'none',  label:'シュート',   key:'shot' },
-              ].map(({ stroke, dash, label, key }) => (
-                <div key={key} style={{ display:'flex', alignItems:'center', gap:6 }}>
-                  <svg width={22} height={6}>
-                    <line x1={0} y1={3} x2={22} y2={3} stroke={stroke} strokeWidth={2} strokeDasharray={dash}/>
-                  </svg>
-                  <span>{label}</span>
-                </div>
-              ))}
-            </div>
           </div>
         </div>
 
-        <div style={{
-          flex:1, background:'#111B2E', position:'relative',
-          display:'flex', flexDirection:'column', overflow:'hidden',
-        }}>
+        {/* 右：ボードエリア */}
+        <div style={{ flex:1, background:'#111B2E', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
+          {/* エディタツールバー */}
+          {editorMode && (
+            <div style={{
+              padding:'10px 16px', background:C.editorBg,
+              borderBottom:`2px solid ${C.orange}40`,
+              display:'flex', alignItems:'center', gap:10, flexShrink:0,
+            }}>
+              <span style={{ fontSize:11, color:C.orange, fontWeight:700, letterSpacing:'.05em', marginRight:4 }}>FRAME</span>
+              {Array.from({ length: FRAME_COUNT }, (_, fi) => (
+                <button key={fi} onClick={() => handleEditorFrameChange(fi)} style={{
+                  width:36, height:36, borderRadius:6, border:'none',
+                  cursor:'pointer', fontWeight:700, fontSize:13, transition:'all .15s',
+                  background: fi === editorFrame ? C.orange : '#1A2E50',
+                  color: fi === editorFrame ? '#fff' : C.muted,
+                  boxShadow: fi === editorFrame ? `0 0 10px ${C.orange}60` : 'none',
+                }}>
+                  {fi + 1}
+                </button>
+              ))}
+              <div style={{ fontSize:10, color:C.muted, marginLeft:4, lineHeight:1.6 }}>
+                駒をドラッグして配置を設定
+              </div>
+              <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
+                <button onClick={handleEditorCancel} style={{
+                  padding:'7px 14px', background:'#1A2E50', border:'none',
+                  borderRadius:6, color:C.muted, fontSize:12, cursor:'pointer',
+                }}>キャンセル</button>
+                <button onClick={handleRegisterScene} style={{
+                  padding:'7px 18px', background:C.green, border:'none',
+                  borderRadius:6, color:'#0A1628', fontSize:12,
+                  fontWeight:700, cursor:'pointer', boxShadow:`0 0 12px ${C.green}50`,
+                }}>✓ シーンを登録</button>
+              </div>
+            </div>
+          )}
+
+          {/* ピッチ */}
           <div style={{
             flex:1, overflow:'hidden', display:'flex',
-            alignItems:'center', justifyContent:'center', padding:'14px 14px 0',
+            alignItems:'center', justifyContent:'center',
+            padding: editorMode ? '10px 14px 0' : '14px 14px 0',
           }}>
             <div style={{
               position:'relative',
@@ -549,89 +658,104 @@ export default function MatchDetail() {
               maxWidth:'100%',
               background:C.pitch,
               borderRadius:6,
-              boxShadow:'0 0 60px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.07)',
+              boxShadow: editorMode
+                ? `0 0 0 2px ${C.orange}60, 0 0 40px rgba(0,0,0,0.6)`
+                : '0 0 60px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.07)',
               overflow:'hidden',
               flexShrink:0,
             }}>
               <SoccerPitch />
-              <TrajectoryLines lines={currentLines} />
 
-              {isAnimating ? (
-                pieces.map(piece => {
-                  const isBall = piece.team === 'ball';
-                  const color  = isBall ? C.ball  : piece.team==='home' ? C.home  : C.away;
-                  const dark   = isBall ? C.ballDark : piece.team==='home' ? C.homeDark : C.awayDark;
-                  const dur    = (activeScene?.frameDuration ?? 800) * 0.92;
-                  return (
-                    <div key={piece.id} style={{
-                      position:'absolute',
-                      left: piece.x - RADIUS,
-                      top:  piece.y - RADIUS,
-                      width:  RADIUS*2,
-                      height: RADIUS*2,
-                      borderRadius:'50%',
-                      transition: `left ${dur}ms cubic-bezier(0.4,0,0.2,1), top ${dur}ms cubic-bezier(0.4,0,0.2,1)`,
-                      background:`radial-gradient(circle at 35% 35%, ${color}, ${dark})`,
-                      border:'2px solid rgba(255,255,255,0.55)',
-                      boxShadow:'0 3px 10px rgba(0,0,0,0.55)',
-                      display:'flex', alignItems:'center', justifyContent:'center',
-                      fontSize: isBall ? 14 : (piece.no.length>1 ? 10 : 12),
-                      fontWeight:700, color:'#fff', fontFamily:'sans-serif',
-                      zIndex: isBall ? 30 : 20,
-                      pointerEvents:'none',
-                    }}>
-                      {isBall ? '⚽' : piece.no}
-                    </div>
-                  );
-                })
+              {editorMode && (
+                <div style={{
+                  position:'absolute', top:10, right:12, zIndex:50,
+                  background:'rgba(251,146,60,0.9)', borderRadius:6,
+                  padding:'3px 12px', fontSize:12, fontWeight:700, color:'#fff',
+                  letterSpacing:'.05em', pointerEvents:'none',
+                }}>
+                  FRAME {editorFrame + 1}
+                </div>
+              )}
+
+              {editorMode ? (
+                displayPieces.map(piece => (
+                  <Piece key={piece.id} piece={piece} onDragStop={handleEditorDragStop} disabled={false} />
+                ))
+              ) : isAnimating ? (
+                displayPieces.map(piece => (
+                  <AnimPiece key={piece.id} piece={piece} duration={FRAME_DUR * 0.92} />
+                ))
               ) : (
-                pieces.map(piece => (
-                  <Piece key={piece.id} piece={piece} onDragStop={handleDragStop} />
+                displayPieces.map(piece => (
+                  <Piece key={piece.id} piece={piece} onDragStop={() => {}} disabled={true} />
                 ))
               )}
             </div>
           </div>
 
-          <div style={{
-            padding:'10px 18px 12px', display:'flex', alignItems:'center', gap:12,
-            borderTop:`1px solid ${C.border}`, background:'rgba(6,10,22,0.95)', flexShrink:0,
-          }}>
-            <button onClick={handlePlayPause} disabled={!activeScene} style={{
-              width:40, height:40, borderRadius:'50%',
-              background: activeScene ? C.blue : C.border,
-              border:'none', cursor: activeScene ? 'pointer' : 'default',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              fontSize:18, color:'#fff', flexShrink:0, transition:'all .15s',
-              boxShadow: activeScene ? `0 0 12px ${C.blue}60` : 'none',
+          {/* コントロールバー（再生モードのみ） */}
+          {!editorMode && (
+            <div style={{
+              padding:'10px 18px 12px', display:'flex', alignItems:'center', gap:12,
+              borderTop:`1px solid ${C.border}`, background:'rgba(6,10,22,0.95)', flexShrink:0,
             }}>
-              {isPlaying ? '⏸' : '▶'}
-            </button>
+              <button onClick={handlePlayPause} disabled={!activePlayScene} style={{
+                width:40, height:40, borderRadius:'50%',
+                background: activePlayScene ? C.blue : C.border,
+                border:'none', cursor: activePlayScene ? 'pointer' : 'default',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                fontSize:18, color:'#fff', flexShrink:0, transition:'all .15s',
+                boxShadow: activePlayScene ? `0 0 12px ${C.blue}60` : 'none',
+              }}>
+                {isPlaying ? '⏸' : '▶'}
+              </button>
 
-            <div style={{ flex:1, display:'flex', flexDirection:'column', gap:6 }}>
-              <div style={{ display:'flex', gap:4, alignItems:'center' }}>
-                {activeScene ? (
-                  activeScene.frames.map((_, fi) => (
-                    <button key={fi} onClick={() => handleSeek(fi)} style={{
-                      flex:1, height:8, borderRadius:4, border:'none', cursor:'pointer',
-                      background: fi < frameIndex ? C.blue
-                                : fi === frameIndex ? C.home
-                                : C.border,
-                      opacity: fi === frameIndex ? 1 : fi < frameIndex ? 0.65 : 0.3,
-                      transition:'all .15s',
-                    }}/>
-                  ))
-                ) : (
-                  <div style={{ flex:1, height:8, borderRadius:4, background:C.border, opacity:.2 }}/>
-                )}
-              </div>
-              <div style={{ fontSize:10, color:C.muted }}>
-                {activeScene
-                  ? `フレーム ${frameIndex + 1} / ${totalFrames}${isPlaying ? '  ● 再生中' : ''}`
-                  : '左のシーンをクリックすると再生されます'}
+              <div style={{ flex:1, display:'flex', flexDirection:'column', gap:6 }}>
+                <div style={{ display:'flex', gap:4, alignItems:'center' }}>
+                  {activePlayScene ? (
+                    activePlayScene.frames.map((_, fi) => (
+                      <button key={fi} onClick={() => handleSeek(fi)} style={{
+                        flex:1, height:8, borderRadius:4, border:'none', cursor:'pointer',
+                        background: fi < playFrameIdx ? C.blue : fi === playFrameIdx ? C.home : C.border,
+                        opacity: fi === playFrameIdx ? 1 : fi < playFrameIdx ? 0.65 : 0.3,
+                        transition:'all .15s',
+                      }}/>
+                    ))
+                  ) : (
+                    <div style={{ flex:1, height:8, borderRadius:4, background:C.border, opacity:.2 }}/>
+                  )}
+                </div>
+                <div style={{ fontSize:10, color:C.muted }}>
+                  {activePlayScene
+                    ? `フレーム ${playFrameIdx + 1} / ${totalPlayFrames}${isPlaying ? '  ● 再生中' : ''}`
+                    : '左のシーンをクリックすると再生されます'}
+                </div>
               </div>
             </div>
-            {/* 右下のイベントバッジエリアを削除しました */}
-          </div>
+          )}
+
+          {/* エディタフレーム案内バー */}
+          {editorMode && (
+            <div style={{
+              padding:'10px 18px', borderTop:`1px solid ${C.border}`,
+              background:'rgba(6,10,22,0.95)', flexShrink:0,
+              display:'flex', alignItems:'center', gap:12,
+            }}>
+              <div style={{ display:'flex', gap:4, flex:1 }}>
+                {Array.from({ length: FRAME_COUNT }, (_, fi) => (
+                  <button key={fi} onClick={() => handleEditorFrameChange(fi)} style={{
+                    flex:1, height:8, borderRadius:4, border:'none', cursor:'pointer',
+                    background: fi === editorFrame ? C.orange : fi < editorFrame ? `${C.orange}60` : C.border,
+                    opacity: fi === editorFrame ? 1 : fi < editorFrame ? 0.7 : 0.3,
+                    transition:'all .15s',
+                  }}/>
+                ))}
+              </div>
+              <div style={{ fontSize:10, color:C.orange }}>
+                フレーム {editorFrame + 1} / {FRAME_COUNT} を編集中
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
